@@ -644,7 +644,9 @@ A similarity score (e.g., dot product) is calculated between the query and the P
 ## PDF Integrated With LLM Model:
 
 ### Result from the PDF 
+
 ![img_3.png](Results/img_3.png)
+
 ![img_4.png](Results/img_4.png)
 
 This results is directly from the PDF, If the result is not found it falls back to the LLM to look for a result (This feature i am still working on)
