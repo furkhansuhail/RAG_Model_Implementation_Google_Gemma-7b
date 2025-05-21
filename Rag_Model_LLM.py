@@ -68,21 +68,19 @@ class RagModel:
 
         # Searching for the results of a query in pdf without LLM
         # THis is done by using the dot product between the vecotrs
-        self.Semantic_Rag_Search()
+        self.Semantic_Rag_DotProduct_Search()
 
         # Semantic Search - Functionalizing Semantic Search
-        # self.SemanticSearch()
+        self.SemanticSearch()
 
         # Local LLM Model
-        self.LocalLLM()
+        # self.LocalLLM()
 
 
-        # These are extra models i am working on but the RAG Model is complete
-        # PDF_IntegratedwithLLM- this will give a short to the point answer
-        # self.LocalLLM_PDF()
+        # Local LLM Fallback if query not found in pdf
+        # self.PromptFeature_LLM()
 
-        # this is still under construction
-        # self.LocalLLM_PDF_Fallback()
+
 
     def text_formatter(self, text: str) -> str:
         """Performs minor formatting on text."""
@@ -221,9 +219,9 @@ class RagModel:
             pickle.dump(self.pages_and_chunks_over_min_token_len, f)
         print(f"✅ Embeddings saved to {embeddings_save_path}")
 
-    #_________________________________________Testing Search in PDF_____________________________________________________
+    #_________________________________________Phase 1 Dot Product  Search in PDF________________________________________
 
-    def Semantic_Rag_Search(self):
+    def Semantic_Rag_DotProduct_Search(self):
         text_chunks_and_embedding_df = None
         # Import texts and embedding df
         with open("text_chunks_and_embeddings.pkl", "rb") as f:
@@ -245,23 +243,21 @@ class RagModel:
         self.embeddings = torch.tensor(np.array(text_chunks_and_embedding_df["embedding"].tolist()),
                                        dtype=torch.float32).to(
             self.device)
-        print(self.embeddings.shape)
-        print(text_chunks_and_embedding_df.head())
-        print(self.embeddings[0].dtype)
+        # print(self.embeddings.shape)
+        # print(text_chunks_and_embedding_df.head())
+        # print(self.embeddings[0].dtype)
         self.SearchQuery()
 
     def SearchQuery(self):
         query = "macronutrients functions"
         print(f"Query: {query}")
         PageNumberList = []
+
         # 2. Embed the query to the same numerical space as the text examples
         # Note: It's important to embed your query with the same model you embedded your examples with.
         # query_embedding = self.embedding_model.encode(query, convert_to_tensor=True)
         query_embedding = self.embedding_model.encode(query, convert_to_tensor=True).to(self.device)
-        print(query_embedding.dtype)
         # 3. Get similarity scores with the dot product (we'll time this for fun)
-        from time import perf_counter as timer
-
         start_time = timer()
         dot_scores = util.dot_score(a=query_embedding, b=self.embeddings)[0]
         end_time = timer()
@@ -284,7 +280,7 @@ class RagModel:
             print(f"Page number: {self.pages_and_chunks[idx]['page_number']}")
             PageNumberList.append(self.pages_and_chunks[idx]['page_number'])
             print("\n")
-        # self.CheckResult_PDF_Page(query, PageNumberList)
+        self.CheckResult_PDF_Page(query, PageNumberList)
 
     def CheckResult_PDF_Page(self, query, PageNumberList):
         for pageNumber in PageNumberList:
@@ -315,13 +311,15 @@ class RagModel:
         wrapped_text = textwrap.fill(text, wrap_length)
         print(wrapped_text)
 
-    #_______________________________________________SEMANTIC SEARCH____________________________________________________
+
+    # ______________________________________Semantic Search Pipeline____________________________________________________
+
     def retrieve_relevant_resources(self, query: str,
-                                n_resources_to_return: int=5,
-                                print_time: bool=True):
+                                    n_resources_to_return: int = 5,
+                                    print_time: bool = True):
         model = self.embedding_model
         # Embed the query
-        query_embedding = model.encode(query,convert_to_tensor=True)
+        query_embedding = model.encode(query, convert_to_tensor=True)
 
         # Get dot product scores on embeddings
         start_time = timer()
@@ -361,20 +359,23 @@ class RagModel:
             print("\n")
 
     def SemanticSearch(self):
-        query = "symptoms of pellagra"
         while True:
-            query = input("Enter your query for Semantic Search (type 'exit' to quit): ").strip()
-            if query.lower() == "exit":
+            query = input("Enter your query for Semantic Search (type 'LLM' to move to next Function or exit to quit): ").strip()
+            if query.lower() == "llm":
+                self.LocalLLM()
+            elif query.lower() == "exit":
                 print("Exiting Semantic Search.")
                 break
             # Get just the scores and indices of top related results
             scores, indices = self.retrieve_relevant_resources(query=query)
-            print(scores, indices)
-
             # Print out the texts of the top scores
             self.print_top_results_and_scores(query=query)
 
-    #_______________________________________________________LocaL LLM Model____________________________________________
+    #___________________________________________________________________________________________________________________
+
+                                        # Adding LLM Model for Local Generation with Prompt Feature
+
+    #___________________________________________________________________________________________________________________
     def get_model_num_params(self, model: torch.nn.Module):
         return sum([param.numel() for param in model.parameters()])
 
@@ -397,10 +398,7 @@ class RagModel:
                 "model_mem_mb": round(model_mem_mb, 2),
                 "model_mem_gb": round(model_mem_gb, 2)}
 
-
-
     def LocalLLM(self):
-        print("________________________________________________________________________________________")
         # Bonus: Setup Flash Attention 2 for faster inference, default to "sdpa" or "scaled dot product attention" if it's not available
         # Flash Attention 2 requires NVIDIA GPU compute capability of 8.0 or above, see: https://developer.nvidia.com/cuda-gpus
         # Requires !pip install flash-attn, see: https://github.com/Dao-AILab/flash-attention
@@ -408,6 +406,7 @@ class RagModel:
             attn_implementation = "flash_attention_2"
         else:
             attn_implementation = "sdpa"
+
         # print(f"[INFO] Using attention implementation: {attn_implementation}")
 
         # 2. Pick a model we'd like to use (this will depend on how much GPU memory you have available)
@@ -433,11 +432,14 @@ class RagModel:
         self.get_model_mem_size(self.llm_model)
 
         while True:
-            query = input("Enter your query for Semantic Search (type 'exit' to quit): ").strip()
+            query = input("Enter your query for Semantic Search (type 'llm_prompt' to quit): ").strip()
             print(f"Query Being Searched :\n{query}")
-            if query.lower() == "exit":
+            if query.lower() == "llm_prompt":
+                self.PromptFeature_LLM()
+            elif query.lower() == "exit":
                 print("Exiting Semantic Search.")
                 break
+
             # Create prompt template for instruction-tuned model
             dialogue_template = [
                 {"role": "user",
@@ -466,136 +468,12 @@ class RagModel:
             # print(f"Input text: {input_text}\n")
             print(f"Output text:\n{outputs_decoded.replace(prompt, '').replace('<bos>', '').replace('<eos>', '')}")
 
-    # ______________________________________________PDF+LLM_____________________________________________________________
-    def prompt_formatter(self, query: str, context_items: list[dict]) -> str:
-        context = "- " + "\n- ".join([item["sentence_chunk"] for item in context_items])
+    # ___________________________________________________________________________________________________________________
 
-        base_prompt = """Based on the following context items, please answer the query. 
-                         Give yourself room to think by extracting relevant passages from the context before answering the query. 
-                         Don't return the thinking, only return the answer. Make sure your answers are as explanatory as possible. 
-                         Use the following examples as reference for the ideal answer style. 
-                         \nExample 1: 
-                         Query: What are the fat-soluble vitamins? 
-                         Answer: The fat-soluble vitamins include Vitamin A, Vitamin D, Vitamin E, and Vitamin K... 
-                         \nExample 2:
-                         Query: What are the causes of type 2 diabetes? 
-                         Answer: Type 2 diabetes is often associated with overnutrition... 
-                         \nExample 3: 
-                         Query: What is the importance of hydration for physical performance? 
-                         Answer: Hydration is crucial for physical performance... 
-                         \nNow, using only the information provided in the context items below, answer the following user query as clearly and accurately as possible.
-                         {context}
-                         \nUser query: {query}
-                         Answer:"""
-        return base_prompt.format(context=context, query=query)
+                                        # Prompt Feature Feature
 
-    def fallback_prompt(self, query: str) -> str:
-        return f"Please answer the following question as clearly and accurately as possible:\n\nQuestion: {query}\nAnswer:"
-
-    def AddingPDFDatatoLLMModel(self, query, top_k=5, max_new_tokens=256):
-        # print(f"\n[INFO] Running RAG-powered query: {query}\n")
-        # scores, indices = self.retrieve_relevant_resources(query=query)
-        # context_items = [self.pages_and_chunks[i] for i in indices]
-        # prompt = self.prompt_formatter(query=query, context_items=context_items)
-        # tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path=self.model_id)
-        # inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
-        # output = self.llm_model.generate(**inputs, max_new_tokens=512)
-        # response = tokenizer.decode(output[0], skip_special_tokens=True)
-        # print("Model Response:\n", response)
-
-        scores, indices = self.retrieve_relevant_resources(query=query)
-        # Collect the context chunks
-        context_items = [self.pages_and_chunks[i] for i in indices]
-        # Create a combined prompt
-        prompt = self.prompt_formatter(query=query, context_items=context_items)
-
-        tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path=self.model_id)
-        input_ids = tokenizer(prompt, return_tensors="pt").to("cuda")
-
-        outputs = self.llm_model.generate(
-            **input_ids,
-            max_new_tokens=max_new_tokens,
-            temperature=0.7,
-            do_sample=True
-        )
-
-        output_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-        print("\n[MODEL RESPONSE]")
-        print(output_text.replace(prompt, "").strip())
-
-
-
-    # Modify LocalLLM method to call the RAG method
-    def LocalLLM_PDF_Fallback(self):
-
-        if (is_flash_attn_2_available()) and (torch.cuda.get_device_capability(0)[0] >= 8):
-            attn_implementation = "flash_attention_2"
-        else:
-            attn_implementation = "sdpa"
-
-        model_id = self.model_id
-
-        tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path=model_id)
-        self.llm_model = AutoModelForCausalLM.from_pretrained(
-            pretrained_model_name_or_path=model_id,
-            torch_dtype=torch.float16,
-            quantization_config=self.quantization_config if self.use_quantization_config else None,
-            low_cpu_mem_usage=False,
-            attn_implementation=attn_implementation
-        )
-
-        if not self.use_quantization_config:
-            self.llm_model.to("cuda")
-
-        self.get_model_num_params(self.llm_model)
-        self.get_model_mem_size(self.llm_model)
-
-        while True:
-            query = input("Enter your query for Semantic RAG-powered LLM (type 'exit' to quit): ").strip()
-            if query.lower() == "exit":
-                print("Exiting LLM session.")
-                break
-
-            self.AddingPDFDatatoLLMModel(query)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    #________________________________________LLM +PDF Fallback_________________________________________________________
-
-    def LLM_Model_Feature_Prompt(self):
-        while True:
-            query = input("Enter your query for Semantic Search (type 'exit' to quit): ").strip()
-            print(f"Query Being Searched :\n{query}")
-            if query.lower() == "exit":
-                print("Exiting Semantic Search.")
-                break
-
-            scores, indices = self.retrieve_relevant_resources(query=query)
-            print(scores, indices)
-            # Create a list of context items
-            context_items = [self.pages_and_chunks[i] for i in indices]
-
-            # Format prompt with context items
-            prompt = self.prompt_formatter_LLM(query=query,
-                                      context_items=context_items)
-            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
-            print(prompt)
-
-
-    def prompt_formatter_LLM(self, query: str,
+    # ___________________________________________________________________________________________________________________
+    def prompt_formatter(self, query: str,
                          context_items: list[dict]) -> str:
         """
         Augments query with text-based context from context_items.
@@ -606,23 +484,35 @@ class RagModel:
         # Create a base prompt with examples to help the model
         # Note: this is very customizable, I've chosen to use 3 examples of the answer style we'd like.
         # We could also write this in a txt file and import it in if we wanted.
-        base_prompt = """Based on the following context items, please answer the query.
-                         Give yourself room to think by extracting relevant passages from the context before answering the query.
-                         Don't return the thinking, only return the answer. Make sure your answers are as explanatory as possible.
-                         Use the following examples as reference for the ideal answer style.
-                         \nExample 1:
-                         Query: What are the fat-soluble vitamins?
-                         Answer: The fat-soluble vitamins include Vitamin A, Vitamin D, Vitamin E, and Vitamin K...
-                         \nExample 2:
-                         Query: What are the causes of type 2 diabetes?
-                         Answer: Type 2 diabetes is often associated with overnutrition...
-                         \nExample 3:
-                         Query: What is the importance of hydration for physical performance?
-                         Answer: Hydration is crucial for physical performance...
-                         \nNow, using only the information provided in the context items below, answer the following user query as clearly and accurately as possible.
-                         {context}
-                         \nUser query: {query}
-                         Answer:"""
+        base_prompt = """Based on the following context items, please answer the query. 
+                        Give yourself room to think by extracting relevant passages from the context before answering the query. 
+                        Don't return the thinking, only return the answer. Make sure your answers are as explanatory as possible. 
+                        Use the following examples as reference for the ideal answer style. 
+                        
+                        \nExample 1: 
+                        Query: What are the fat-soluble vitamins? 
+                        Answer: The fat-soluble vitamins include Vitamin A, Vitamin D, Vitamin E, and Vitamin K... 
+                        
+                        \nExample 2:
+                        Query: What are the causes of type 2 diabetes? 
+                        Answer: Type 2 diabetes is often associated with overnutrition... 
+                        
+                        \nExample 3: 
+                        Query: What is the importance of hydration for physical performance? 
+                        Answer: Hydration is crucial for physical performance... 
+                        \nContext: 
+                        \nNow, using only the information provided in the context items below, answer the following user query as clearly and accurately as possible.
+                        \n
+                        \n
+                        \n
+                        _____________________________________________________________________________________________
+                        User query: {query}
+                        Answer:
+                        \n
+                        {context}
+                        \n
+                        _____________________________________________________________________________________________
+                        """
 
         # Update base prompt with context items and query
         base_prompt = base_prompt.format(context=context, query=query)
@@ -633,13 +523,107 @@ class RagModel:
              "content": base_prompt}
         ]
 
-        # Apply the chat template
-        model_id = self.model_id
+        # 2. Pick a model we'd like to use (this will depend on how much GPU memory you have available)
+        # model_id = "google/gemma-7b-it"
+        model_id = self.model_id  # (we already set this above)
+        # 3. Instantiate tokenizer (tokenizer turns text into numbers ready for the model)
         tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path=model_id)
+
+        # Apply the chat template
         prompt = tokenizer.apply_chat_template(conversation=dialogue_template,
                                                tokenize=False,
                                                add_generation_prompt=True)
         return prompt
 
+    def PromptFeature_LLM(self):
+        while True:
+            query = input("Enter your query for Semantic Search (type pdf for next phase or 'exit' to quit): ").strip()
+            print(f"Query Being Searched :\n{query}")
+            if query.lower() == "pdf":
+                self.PPD_LLM()
+            elif query.lower() == "exit":
+                print("Exiting Semantic Search.")
+                break
+
+            # Get just the scores and indices of top related results
+            scores, indices = self.retrieve_relevant_resources(query=query)
+
+            # Create a list of context items
+            context_items = [self.pages_and_chunks[i] for i in indices]
+
+            # Format prompt with context items
+            prompt = self.prompt_formatter(query=query,
+                                      context_items=context_items)
+            print(prompt)
+
+    # ___________________________________________________________________________________________________________________
+
+    # PDF + LLM
+
+    # ___________________________________________________________________________________________________________________
+
+    def ask(self, query,
+            temperature=0.7,
+            max_new_tokens=512,
+            format_answer_text=True,
+            return_answer_only=True):
+        """
+        Takes a query, finds relevant resources/context and generates an answer to the query based on the relevant resources.
+        """
+
+        # Get just the scores and indices of top related results
+        scores, indices = self.retrieve_relevant_resources(query=query)
+
+        # Create a list of context items
+        context_items = [self.pages_and_chunks[i] for i in indices]
+
+        # Add score to context item
+        for i, item in enumerate(context_items):
+            item["score"] = scores[i].cpu()  # return score back to CPU
+
+        # Format the prompt with context items
+        prompt = self.prompt_formatter(query=query,
+                                  context_items=context_items)
+
+        tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path=self.model_id)
+
+        # Tokenize the prompt
+        input_ids = tokenizer(prompt, return_tensors="pt").to("cuda")
+
+        # Generate an output of tokens
+        outputs = self.llm_model.generate(**input_ids,
+                                     temperature=temperature,
+                                     do_sample=True,
+                                     max_new_tokens=max_new_tokens)
+
+        # Turn the output tokens into text
+        output_text = tokenizer.decode(outputs[0])
+
+        if format_answer_text:
+            # Replace special tokens and unnecessary help message
+            output_text = output_text.replace(prompt, "").replace("<bos>", "").replace("<eos>", "").replace(
+                "Sure, here is the answer to the user query:\n\n", "")
+
+        # Only return the answer without the context items
+        if return_answer_only:
+            return output_text
+
+        return output_text, context_items
+
+
+    def PPD_LLM(self):
+        while True:
+            query = input("Enter your query for Semantic Search (type 'exit' to quit): ").strip()
+            print(f"Query Being Searched :\n{query}")
+            if query.lower() == "exit":
+                print("Exiting Semantic Search.")
+                break
+            # Answer query with context and return context
+            answer, context_items = self.ask(query=query, temperature=0.7, max_new_tokens=512, return_answer_only=False)
+
+            print(f"Answer:\n")
+            self.print_wrapped(answer)
+            print(f"Context items:")
+            # context_items
 
 RagModelObj = RagModel()
